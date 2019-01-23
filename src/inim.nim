@@ -1,7 +1,9 @@
 # MIT License
 # Copyright (c) 2018 Andrei Regiani
 
-import os, osproc, rdstdin, strformat, strutils, terminal, times, strformat
+import oids, os, osproc, rdstdin, strformat, strutils, terminal, times, strformat
+from posix import SIGQUIT, onSignal
+from ospaths import existsEnv, getEnv, joinPath
 
 type App = ref object
     nim: string
@@ -16,10 +18,20 @@ const
     indentTriggers = [",", "=", ":", "var", "let", "const", "type", "import",
                       "object", "enum"] # endsWith
     embeddedCode = staticRead("inimpkg/embedded.nim") # preloaded code into user's session
+    editor = getEnv("EDITOR")
 
 let
     uniquePrefix = epochTime().int
     bufferSource = getTempDir() & "inim_" & $uniquePrefix & ".nim"
+
+onSignal(SIGQUIT):
+  let tmpFileName = joinPath(getTempDir(), $genOid(), ".tmp")
+  let tmpFile = open(tmpFileName, fmWrite)
+  let returnedCode = execCmd(editor & " " & tmpFileName)
+  echo $returnedCode
+
+  tmpFile.setFilePos(0)
+  tmpFile.close
 
 proc compileCode():auto =
     # PENDING https://github.com/nim-lang/Nim/issues/8312, remove redundant `--hint[source]=off`
@@ -246,6 +258,11 @@ proc runForever() =
             indentLevel = 0
             tempIndentCode = ""
             continue
+
+        for c in currentExpression:
+          if ord(c) == 0x19:
+            stdout.write "19!"
+            stdout.flushFile
 
         # Special commands
         if currentExpression in ["exit", "exit()", "quit", "quit()"]:
