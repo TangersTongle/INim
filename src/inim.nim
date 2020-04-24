@@ -9,7 +9,6 @@ type App = ref object
     srcFile: string
     showHeader: bool
     flags: string
-    rcFile: string
 
 var
   app: App
@@ -29,12 +28,15 @@ const
     ConfigDir = getConfigDir() / "inim"
     RcFilePath = ConfigDir / "inim.ini"
 
-proc createRcFile(path: string): Config =
+proc createRcFile(): Config =
     ## Create a new rc file with default sections populated
     result = newConfig()
     result.setSectionKey("History", "persistent", "True")
     result.setSectionKey("Style", "prompt", "nim> ")
-    result.writeConfig(path)
+    result.writeConfig(RcFilePath)
+
+config = if not existsorCreateDir(ConfigDir) or not existsFile(RcFilePath): createRcFile()
+         else: loadConfig(RcFilePath)
 
 let
     uniquePrefix = epochTime().int
@@ -60,7 +62,13 @@ var
     previouslyIndented = false # Helper for showError(), indentLevel resets before showError()
     buffer: File
     noiser = Noise.init()
-    historyFile: string
+
+when promptHistory:
+    # When prompt history is enabled, we want to load history
+    var historyFile = if config.getSectionValue("History", "persistent") == "True": ConfigDir / "history.nim"
+                      else: tmpHistory
+    discard noiser.historyLoad(historyFile)
+
 
 template outputFg(color: ForegroundColor, bright: bool = false, body: untyped): untyped =
     ## Sets the foreground color for any writes to stdout in body and resets afterwards
@@ -109,9 +117,7 @@ proc cleanExit(exitCode = 0) =
 proc getFileData(path: string): string =
     try: path.readFile() except: ""
 
-proc compilationSuccess(current_statement, output: string, commit = true) =
-    ## Add our line to valid code
-    ## If we don't commit, roll back validCode if we've entered an echo
+proc compilationSuccess(current_statement, output: string) =
     if len(tempIndentCode) > 0:
         validCode &= tempIndentCode
     else:
@@ -127,13 +133,7 @@ proc compilationSuccess(current_statement, output: string, commit = true) =
                 continue
             echo line
 
-    # Roll back our valid code to not include the echo
-    if current_statement.contains("echo") and not commit:
-        let newOffset = current_statement.len + 1
-        validCode = validCode[0 ..< ^newOffset]
-    else:
-        # Or commit the line
-        currentOutputLine = len(lines)-1
+    currentOutputLine = len(lines)-1
 
 proc bufferRestoreValidCode() =
     if buffer != nil:
@@ -340,9 +340,6 @@ Help - help, help()""")
     # Succesful compilation, expression is valid
     if status == 0:
         compilationSuccess(currentExpression, output)
-        if "echo" in currentExpression:
-          # Roll back echoes
-          bufferRestoreValidCode()
     # Maybe trying to echo value?
     elif "has to be discarded" in output and indentLevel == 0: #
         bufferRestoreValidCode()
@@ -354,12 +351,11 @@ Help - help, help()""")
 
         let (echo_output, echo_status) = compileCode()
         if echo_status == 0:
-            compilationSuccess(currentExpression, echo_output, commit = false)
+            compilationSuccess(currentExpression, echo_output)
         else:
             # Show any errors in echoing the statement
             indentLevel = 0
             showError(echo_output)
-
         # Roll back to not include the temporary echo line
         bufferRestoreValidCode()
     # Compilation error
@@ -372,19 +368,17 @@ Help - help, help()""")
     # Clean up
     tempIndentCode = ""
 
-proc initApp*(nim, srcFile: string, showHeader: bool, flags = "", rcFilePath = RcFilePath) =
+proc initApp*(nim, srcFile: string, showHeader: bool, flags = "") =
     ## Initialize the ``app` variable.
     app = App(
         nim: nim,
         srcFile: srcFile,
         showHeader: showHeader,
-        flags: flags,
-        rcFile: rcFilePath
+        flags: flags
     )
 
 proc main(nim = "nim", srcFile = "", showHeader = true,
-          flags: seq[string] = @[], createRcFile = false,
-          rcFilePath: string = RcFilePath) =
+          flags: seq[string] = @[], createRcFile = false) =
     ## inim interpreter
 
     initApp(nim, srcFile, showHeader)
@@ -393,15 +387,8 @@ proc main(nim = "nim", srcFile = "", showHeader = true,
 
     if app.showHeader: welcomeScreen()
 
-    config = if not existsorCreateDir(rcFilePath.splitPath.head) or not existsFile(rcFilePath) or createRcFile : createRcFile(rcFilePath)
-             else: loadConfig(rcFilePath)
-
-
-    when promptHistory:
-        # When prompt history is enabled, we want to load history
-        historyFile = if config.getSectionValue("History", "persistent") == "True": ConfigDir / "history.nim"
-                          else: tmpHistory
-        discard noiser.historyLoad(historyFile)
+    if createRcFile:
+        config = createRcFile()
 
     if srcFile.len > 0:
         doAssert(srcFile.fileExists, "cannot access " & srcFile)
@@ -418,13 +405,11 @@ proc main(nim = "nim", srcFile = "", showHeader = true,
         doRepl()
 
 when isMainModule:
-  when not defined(TEST):
     import cligen
     dispatch(main, short = {"flags": 'd'}, help = {
             "nim": "path to nim compiler",
             "srcFile": "nim script to preload/run",
             "showHeader": "show program info startup",
             "flags": "nim flags to pass to the compiler",
-            "createRcFile": "force create an inimrc file. Overrides current inimrc file",
-            "rcFilePath": "Change location of the inimrc file to use"
+            "createRcFile": "force create an inimrc file. Overrides current inimrc file"
         })
